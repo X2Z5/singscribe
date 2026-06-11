@@ -43,9 +43,34 @@ public:
         req.userPrompt       = userPrompt;
         req.mode             = mode;
         req.voiceLanguage    = voiceLanguage;
+        if (userPrompt.containsIgnoreCase ("japan") || userPrompt.containsIgnoreCase ("romaji"))
+            req.voiceLanguage = "jpn";                    // user explicitly wants Japanese
         req.syllablesPerLine = deriveSyllableBudget();
         req.targetLines      = juce::jmax (1, (int) req.syllablesPerLine.size());
 
+        launch (req, std::make_shared<UICallbacks> (std::move (ui)), 0);
+    }
+
+    /** "Translator" button: meaning-translate text to Japanese (romaji) via the
+        LLM, then distribute the result onto the notes. */
+    void translateAndApply (const juce::String& text, UICallbacks ui)
+    {
+        if (backend == nullptr || ! backend->isAvailable())
+        {
+            if (ui.onFinished) ui.onFinished (false, "no LLM backend available");
+            return;
+        }
+        if (text.trim().isEmpty())
+        {
+            if (ui.onFinished) ui.onFinished (false, "type the text to translate first");
+            return;
+        }
+        LyricRequest req;
+        req.userPrompt    = text;
+        req.mode          = LyricRequest::Mode::TranslateToRomaji;
+        req.voiceLanguage = "jpn";
+        req.targetLines   = juce::jmax (1, juce::StringArray::fromLines (text).size());
+        req.temperature   = 0.4f;                          // translation: stay literal
         launch (req, std::make_shared<UICallbacks> (std::move (ui)), 0);
     }
 

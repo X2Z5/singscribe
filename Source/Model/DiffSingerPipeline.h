@@ -19,12 +19,19 @@ class DiffSingerPipeline
 public:
     struct Result { bool ok = false; juce::String error; };
 
+    struct RenderOptions
+    {
+        const std::vector<float>* spkEmbed = nullptr;   // required by spk_embed models
+        double centsOffset = 0.0;                       // unison detune
+    };
+
     static Result renderPhrase (const LoadedVoice& v,
                                 const std::vector<VocalNote>& phrase,   // sorted, non-rest
                                 double bpm,
                                 juce::AudioBuffer<float>& pcmOut,
                                 double& startBeatOut,
-                                const std::function<bool()>& shouldAbort)
+                                const std::function<bool()>& shouldAbort,
+                                const RenderOptions& ro)
     {
         Result r;
         if (phrase.empty())                      { r.error = "empty phrase"; return r; }
@@ -179,8 +186,9 @@ public:
             return 440.0 * std::pow (2.0, (m - 69.0) / 12.0);
         };
 
+        const double tuneMul = std::pow (2.0, ro.centsOffset / 1200.0);
         for (int64_t f = 0; f < F; ++f)
-            f0[(size_t) f] = (float) pitchAt (((double) f + 0.5) * frameSec);
+            f0[(size_t) f] = (float) (pitchAt (((double) f + 0.5) * frameSec) * tuneMul);
 
         if (shouldAbort && shouldAbort()) { r.error = "aborted"; return r; }
 
@@ -197,6 +205,7 @@ public:
 
             std::vector<float>   zerosF ((size_t) F, 0.0f), onesF ((size_t) F, 1.0f);
             std::vector<int64_t> zerosP (P, 0);
+            std::vector<float>   spkTiled;                 // kept alive through Run
             int64_t speedupVal = v.cfgSpeedup, depthVal = v.cfgDepth;
 
             Ort::AllocatorWithDefaultOptions alloc;
@@ -250,9 +259,26 @@ public:
                 }
                 else if (nm == "spk_embed")
                 {
-                    r.error = "multi-speaker model (spk_embed input) not supported in v1 — "
-                              "use a single-speaker acoustic export";
-                    return r;
+                    if (ro.spkEmbed == nullptr || ro.spkEmbed->empty())
+                    {
+                        r.error = "this voice needs a speaker (spk_embed) but no .emb files "
+                                  "were found in the voicebank folder";
+                        return r;
+                    }
+                    int64_t D = (int64_t) ro.spkEmbed->size();
+                    if (dims.size() == 3 && dims[2] > 0 && dims[2] != D)
+                    {
+                        r.error = "speaker embed size " + juce::String ((int) D)
+                                + " doesn't match model (" + juce::String ((int) dims[2]) + ")";
+                        return r;
+                    }
+                    spkTiled.resize ((size_t) (F * D));
+                    for (int64_t fr = 0; fr < F; ++fr)
+                        memcpy (spkTiled.data() + fr * D, ro.spkEmbed->data(), (size_t) D * sizeof (float));
+                    const int64_t spkShape[3] = { 1, F, D };
+                    inNames.push_back (nm);
+                    inVals.push_back (Ort::Value::CreateTensor<float> (mem, spkTiled.data(),
+                                          spkTiled.size(), spkShape, 3));
                 }
                 else
                 {

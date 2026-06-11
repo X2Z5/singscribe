@@ -24,7 +24,17 @@ struct LoadedVoice
     std::unique_ptr<Ort::Session> variance;   // loaded if present; unused in v1
     std::unique_ptr<Ort::Session> vocoder;    // mel+f0 → PCM
 
-    std::map<juce::String, int64_t> phonemeMap;   // "ka-less" token → id
+    std::map<juce::String, int64_t> phonemeMap;   // token → id
+
+    // multi-speaker support (spk_embed): one entry per .emb found in the bank
+    juce::StringArray speakerNames;
+    std::vector<std::vector<float>> speakerEmbeds;
+
+    const std::vector<float>* embedForSpeaker (int index) const
+    {
+        if (speakerEmbeds.empty()) return nullptr;
+        return &speakerEmbeds[(size_t) juce::jlimit (0, (int) speakerEmbeds.size() - 1, index)];
+    }
 };
 
 //==============================================================================
@@ -233,6 +243,17 @@ private:
             }
             if (v->phonemeMap.empty()) { errorOut = "phoneme list is empty"; return nullptr; }
 
+            // speaker embeddings (.emb = raw float32 or .npy) for spk_embed models
+            for (const auto& f : info.folder.findChildFiles (juce::File::findFiles, true, "*.emb"))
+            {
+                auto data = loadEmbedFile (f);
+                if (! data.empty())
+                {
+                    v->speakerNames.add (f.getFileNameWithoutExtension());
+                    v->speakerEmbeds.push_back (std::move (data));
+                }
+            }
+
             Ort::SessionOptions opts;
             opts.SetIntraOpNumThreads (juce::jmax (1, juce::SystemStats::getNumCpus() / 2));
             // BASIC instead of ALL: extended graph fusion recurses hard on big
@@ -249,6 +270,27 @@ private:
         catch (const Ort::Exception& e) { errorOut = juce::String ("ONNX: ") + e.what(); }
         catch (const std::exception& e) { errorOut = e.what(); }
         return nullptr;
+    }
+
+    /** .emb files are raw little-endian float32 vectors, sometimes .npy. */
+    static std::vector<float> loadEmbedFile (const juce::File& f)
+    {
+        juce::MemoryBlock mb;
+        if (! f.loadFileAsData (mb) || mb.getSize() < 8)
+            return {};
+        const auto* bytes = (const char*) mb.getData();
+        size_t offset = 0;
+        if (mb.getSize() > 10 && memcmp (bytes, "\x93NUMPY", 6) == 0)
+        {
+            const auto headerLen = (size_t) juce::ByteOrder::littleEndianShort (bytes + 8);
+            offset = 10 + headerLen;                       // skip npy v1 header
+            if (offset >= mb.getSize()) return {};
+        }
+        const size_t n = (mb.getSize() - offset) / sizeof (float);
+        if (n < 8 || n > 4096) return {};
+        std::vector<float> out (n);
+        memcpy (out.data(), bytes + offset, n * sizeof (float));
+        return out;
     }
 
     std::unique_ptr<Ort::Session> makeSession (const juce::File& f, Ort::SessionOptions& opts)

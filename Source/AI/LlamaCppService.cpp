@@ -116,6 +116,13 @@ bool LlamaCppService::ensureModelLoaded (juce::String& error)
 //==============================================================================
 juce::String LlamaCppService::systemPromptFor (const LyricRequest& r)
 {
+    if (r.mode == LyricRequest::Mode::TranslateToRomaji)
+        return "You are a precise song translator. Translate the user's text into "
+               "natural, singable Japanese. Output ONLY the translation in ROMAJI "
+               "(Latin letters) — no kana, no kanji, no notes, no commentary. Keep "
+               "one output line per input line, with short open syllables that are "
+               "easy to sing.";
+
     juce::String constraints;
     constraints << "Write exactly " << r.targetLines << " short lyric lines. ";
     if (! r.syllablesPerLine.empty())

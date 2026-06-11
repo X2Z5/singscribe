@@ -1,5 +1,5 @@
 #pragma once
-// SingScribeEditor — tabs: VOICE | PIANO ROLL | AI LYRICIST.
+// SingScribeEditor — tabs: VOICE | PIANO ROLL | AI LYRICIST. Theme-aware.
 #include "PluginProcessor.h"
 
 namespace ss
@@ -17,9 +17,9 @@ public:
     {
         setWantsKeyboardFocus (true);
         lyricEdit.setVisible (false);
-        lyricEdit.onReturnKey   = [this] { commitLyricEdit(); };
-        lyricEdit.onEscapeKey   = [this] { lyricEdit.setVisible (false); };
-        lyricEdit.onFocusLost   = [this] { commitLyricEdit(); };
+        lyricEdit.onReturnKey = [this] { commitLyricEdit(); };
+        lyricEdit.onEscapeKey = [this] { lyricEdit.setVisible (false); };
+        lyricEdit.onFocusLost = [this] { commitLyricEdit(); };
         addChildComponent (lyricEdit);
         updateCanvasSize();
         startTimerHz (15);
@@ -28,18 +28,18 @@ public:
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp   (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
-    // geometry
     static constexpr int   pitchLo = 36, pitchHi = 96;
     static constexpr int   rowH = 14;
     static constexpr float beatToX = 28.0f;
 
-    float  beatToPx  (double b) const { return (float) (b * beatToX); }
-    double pxToBeat  (float x)  const { return x / beatToX; }
-    int    pitchToY  (int p)    const { return (pitchHi - p) * rowH; }
-    int    yToPitch  (int y)    const { return juce::jlimit (pitchLo, pitchHi, pitchHi - y / rowH); }
+    float  beatToPx (double b) const { return (float) (b * beatToX); }
+    double pxToBeat (float x)  const { return x / beatToX; }
+    int    pitchToY (int p)    const { return (pitchHi - p) * rowH; }
+    int    yToPitch (int y)    const { return juce::jlimit (pitchLo, pitchHi, pitchHi - y / rowH); }
 
 private:
     void timerCallback() override
@@ -69,6 +69,7 @@ private:
     }
 
     void commitLyricEdit();
+    void auditionSelected();
     static double snap (double b) { return std::round (b * 4.0) / 4.0; }
 
     SingScribeProcessor& proc;
@@ -76,6 +77,7 @@ private:
     juce::Uuid selectedId, editingId;
     enum class DragMode { none, move, resize };
     DragMode dragMode = DragMode::none;
+    bool dragChanged = false;
     VocalNote dragOrig;
     double grabBeatOffset = 0.0;
     int lastSeenRev = -1;
@@ -84,7 +86,6 @@ private:
 };
 
 //==============================================================================
-/** Small external-drag source: drag this onto FL's piano roll to export MIDI. */
 class MidiDragOutSpot : public juce::Component
 {
 public:
@@ -94,12 +95,13 @@ public:
     }
     void paint (juce::Graphics& g) override
     {
+        const auto& th = proc.theme();
         auto r = getLocalBounds().toFloat().reduced (1.0f);
-        g.setColour (juce::Colour (0xff2a2440));
-        g.fillRoundedRectangle (r, 8.0f);
-        g.setColour (juce::Colour (0xff59e3ff).withAlpha (hover ? 0.9f : 0.5f));
-        g.drawRoundedRectangle (r, 8.0f, 1.2f);
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.setColour (th.panel);
+        g.fillRoundedRectangle (r, 9.0f);
+        g.setColour (th.accent2.withAlpha (hover ? 0.95f : 0.55f));
+        g.drawRoundedRectangle (r, 9.0f, 1.3f);
+        g.setColour (th.text.withAlpha (0.9f));
         g.setFont (juce::Font (juce::FontOptions (13.0f)));
         g.drawText ("DRAG MIDI OUT", getLocalBounds(), juce::Justification::centred);
     }
@@ -138,36 +140,40 @@ public:
         viewport.setScrollBarsShown (true, true);
         addAndMakeVisible (viewport);
 
-        lyricInput.setTextToShowWhenEmpty ("type lyrics here — one syllable lands on each note (\"-\" = hold)",
+        lyricInput.setTextToShowWhenEmpty ("type lyrics — one syllable per note (\"-\" = hold). English or romaji/kana.",
                                            juce::Colours::grey);
         addAndMakeVisible (lyricInput);
 
         applyBtn.onClick = [this] { applyLyrics(); };
         addAndMakeVisible (applyBtn);
+
+        translateBtn.onClick = [this] { translateLyrics(); };
+        translateBtn.setTooltip ("AI-translate the text to Japanese (romaji), then put it on the notes");
+        addAndMakeVisible (translateBtn);
+
         addAndMakeVisible (dragOut);
-
-        status.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
         addAndMakeVisible (status);
-
         startTimerHz (5);
     }
 
     void resized() override
     {
         auto r = getLocalBounds();
-        auto bar = r.removeFromBottom (76);
+        auto bar = r.removeFromBottom (78);
         viewport.setBounds (r);
         bar.reduce (12, 6);
         auto row1 = bar.removeFromTop (30);
-        lyricInput.setBounds (row1.removeFromLeft (juce::jmax (200, row1.getWidth() - 300)));
-        applyBtn.setBounds (row1.removeFromLeft (140).reduced (6, 0));
-        dragOut.setBounds (row1.removeFromLeft (150).reduced (2, 0));
-        status.setBounds (bar.removeFromTop (24));
+        lyricInput.setBounds (row1.removeFromLeft (juce::jmax (180, row1.getWidth() - 460)));
+        applyBtn.setBounds     (row1.removeFromLeft (120).reduced (4, 0));
+        translateBtn.setBounds (row1.removeFromLeft (180).reduced (4, 0));
+        dragOut.setBounds      (row1.removeFromLeft (150).reduced (2, 0));
+        status.setBounds (bar.removeFromTop (26));
     }
 
 private:
     void timerCallback() override
     {
+        status.setColour (juce::Label::textColourId, proc.theme().textDim);
         status.setText ("engine: " + proc.renderEngine.getStatus()
                         + "   |   notes: " + juce::String (proc.sequence.countSingableNotes()),
                         juce::dontSendNotification);
@@ -186,11 +192,26 @@ private:
                         juce::dontSendNotification);
     }
 
+    void translateLyrics()
+    {
+        translateBtn.setEnabled (false);
+        LyricGenerator::UICallbacks ui;
+        ui.onConsoleAppend = {};
+        ui.onFinished = [this] (bool ok, const juce::String& s)
+        {
+            translateBtn.setEnabled (true);
+            status.setText (ok ? "translated to Japanese + distributed" : s,
+                            juce::dontSendNotification);
+            if (ok) proc.renderEngine.requestRender (proc.lastBpm.load());
+        };
+        proc.lyricGen.translateAndApply (lyricInput.getText(), std::move (ui));
+    }
+
     SingScribeProcessor& proc;
     PianoRollCanvas canvas;
     juce::Viewport viewport;
     juce::TextEditor lyricInput;
-    juce::TextButton applyBtn { "APPLY LYRICS" };
+    juce::TextButton applyBtn { "APPLY LYRICS" }, translateBtn { "TRANSLATE \xe2\x86\x92 JAPANESE" };
     MidiDragOutSpot dragOut;
     juce::Label status;
 };
@@ -220,7 +241,6 @@ public:
         console.setReadOnly (true);
         addAndMakeVisible (console);
 
-        backendLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
         refreshBackendLabel();
         addAndMakeVisible (backendLabel);
     }
@@ -239,6 +259,7 @@ public:
 private:
     void refreshBackendLabel()
     {
+        backendLabel.setColour (juce::Label::textColourId, proc.theme().textDim);
         if (auto* b = proc.lyricGen.getBackend())
             backendLabel.setText (b->backendName(), juce::dontSendNotification);
     }
@@ -301,42 +322,111 @@ public:
             if (idx >= 0) proc.modelManager.requestLoad (idx);
         };
 
-        bridgeToggle.setToggleState (true, juce::dontSendNotification);
-        bridgeToggle.onClick = [this]
+        speakerBox.onChange = [this]
         {
-            proc.g2p.bridge.enabled = bridgeToggle.getToggleState();
+            proc.renderEngine.speakerIndex.store (juce::jmax (0, speakerBox.getSelectedItemIndex()));
+            proc.renderEngine.requestRender (proc.lastBpm.load());
+            previewVoice();
         };
+
+        unisonBox.addItem ("Solo",     1);
+        unisonBox.addItem ("Unison x2", 2);
+        unisonBox.addItem ("Unison x3", 3);
+        unisonBox.setSelectedId (proc.renderEngine.unisonMode.load() + 1, juce::dontSendNotification);
+        unisonBox.onChange = [this]
+        {
+            proc.renderEngine.unisonMode.store (unisonBox.getSelectedId() - 1);
+            proc.renderEngine.requestRender (proc.lastBpm.load());
+        };
+
+        for (const auto& t : themes())
+            themeBox.addItem (t.name, themeBox.getNumItems() + 1);
+        themeBox.setSelectedId (proc.themeIndex.load() + 1, juce::dontSendNotification);
+        themeBox.onChange = [this]
+        {
+            proc.themeIndex.store (themeBox.getSelectedId() - 1);
+            if (auto* top = getTopLevelComponent()) top->repaint();
+            getParentComponent()->repaint();
+        };
+
+        previewBtn.onClick = [this] { previewVoice(); };
 
         addAndMakeVisible (voiceBox);
         addAndMakeVisible (rescanBtn);
         addAndMakeVisible (openBtn);
+        addAndMakeVisible (speakerBox);
+        addAndMakeVisible (previewBtn);
+        addAndMakeVisible (unisonBox);
+        addAndMakeVisible (themeBox);
         addAndMakeVisible (status);
         addAndMakeVisible (bridgeToggle);
         addAndMakeVisible (hint);
-        hint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.45f));
-        hint.setText ("Voices live in Music/DiffSinger_Voices/<VoiceName>/ "
-                      "(acoustic .onnx + vocoder .onnx + phonemes.txt). "
-                      "GGUF lyric model lives in Music/SingScribe_LLM/.",
+
+        bridgeToggle.setToggleState (true, juce::dontSendNotification);
+        bridgeToggle.onClick = [this] { proc.g2p.bridge.enabled = bridgeToggle.getToggleState(); };
+
+        hint.setText ("Voices: Music/DiffSinger_Voices/<Name>/ (acoustic + vocoder .onnx, phonemes.txt, .emb speakers). "
+                      "Lyric AI: a .gguf in Music/SingScribe_LLM/. Click a speaker to hear a preview.",
                       juce::dontSendNotification);
 
         refreshList (proc.modelManager.getKnownVoices());
+        refreshSpeakers();
     }
 
     ~VoicePanel() override { proc.modelManager.removeListener (this); }
 
+    void paint (juce::Graphics& g) override
+    {
+        const auto& th = proc.theme();
+        g.fillAll (th.bg1);
+        status.setColour (juce::Label::textColourId, th.text.withAlpha (0.85f));
+        hint.setColour (juce::Label::textColourId, th.textDim);
+        bridgeToggle.setColour (juce::ToggleButton::textColourId, th.text.withAlpha (0.8f));
+        bridgeToggle.setColour (juce::ToggleButton::tickColourId, th.accent);
+
+        auto label = [&] (const char* t, juce::Component& c)
+        {
+            g.setColour (th.textDim);
+            g.setFont (juce::Font (juce::FontOptions (11.0f)));
+            g.drawText (t, c.getX(), c.getY() - 16, c.getWidth(), 14, juce::Justification::left);
+        };
+        label ("VOICEBANK", voiceBox);
+        label ("SPEAKER / VOICE COLOR", speakerBox);
+        label ("UNISON", unisonBox);
+        label ("THEME", themeBox);
+    }
+
     void resized() override
     {
         auto r = getLocalBounds().reduced (16);
+        r.removeFromTop (18);
         auto row = r.removeFromTop (32);
-        voiceBox.setBounds (row.removeFromLeft (380));
-        rescanBtn.setBounds (row.removeFromLeft (100).withTrimmedLeft (12));
-        openBtn.setBounds (row.removeFromLeft (130).withTrimmedLeft (12));
+        voiceBox.setBounds (row.removeFromLeft (340));
+        rescanBtn.setBounds (row.removeFromLeft (90).withTrimmedLeft (10));
+        openBtn.setBounds (row.removeFromLeft (120).withTrimmedLeft (10));
+
+        r.removeFromTop (24);
+        auto row2 = r.removeFromTop (32);
+        speakerBox.setBounds (row2.removeFromLeft (240));
+        previewBtn.setBounds (row2.removeFromLeft (110).withTrimmedLeft (10));
+        unisonBox.setBounds (row2.removeFromLeft (130).withTrimmedLeft (16));
+        themeBox.setBounds (row2.removeFromLeft (130).withTrimmedLeft (16));
+
         status.setBounds (r.removeFromTop (30).withTrimmedTop (8));
         bridgeToggle.setBounds (r.removeFromTop (28));
-        hint.setBounds (r.removeFromTop (48));
+        hint.setBounds (r.removeFromTop (52));
     }
 
 private:
+    void previewVoice()
+    {
+        VocalNote n;
+        n.midiPitch = 67;            // G4
+        n.lengthBeats = 1.5;
+        n.lyric = "ra";
+        proc.renderEngine.requestAudition (n);
+    }
+
     void voicesRescanned (const std::vector<DiffSingerModelManager::VoiceInfo>& v) override
     {
         refreshList (v);
@@ -347,9 +437,31 @@ private:
     }
     void voiceLoadFinished (const juce::String& n, bool ok, const juce::String& err) override
     {
-        status.setText (ok ? n + " ready — press play in FL to hear it"
+        status.setText (ok ? n + " ready — click PREVIEW or place a note"
                            : "FAILED: " + err, juce::dontSendNotification);
-        if (ok) proc.renderEngine.requestRender (proc.lastBpm.load());
+        refreshSpeakers();
+        if (ok)
+        {
+            proc.renderEngine.requestRender (proc.lastBpm.load());
+            previewVoice();
+        }
+    }
+
+    void refreshSpeakers()
+    {
+        speakerBox.clear (juce::dontSendNotification);
+        if (auto v = proc.modelManager.getActiveVoice())
+        {
+            int id = 1;
+            for (const auto& s : v->speakerNames)
+                speakerBox.addItem (s, id++);
+            if (v->speakerNames.isEmpty())
+                speakerBox.addItem ("(single voice)", 1);
+            speakerBox.setSelectedItemIndex (
+                juce::jlimit (0, juce::jmax (0, speakerBox.getNumItems() - 1),
+                              proc.renderEngine.speakerIndex.load()),
+                juce::dontSendNotification);
+        }
     }
 
     void refreshList (const std::vector<DiffSingerModelManager::VoiceInfo>& voices)
@@ -368,8 +480,8 @@ private:
     }
 
     SingScribeProcessor& proc;
-    juce::ComboBox voiceBox;
-    juce::TextButton rescanBtn { "RESCAN" }, openBtn { "OPEN FOLDER" };
+    juce::ComboBox voiceBox, speakerBox, unisonBox, themeBox;
+    juce::TextButton rescanBtn { "RESCAN" }, openBtn { "OPEN FOLDER" }, previewBtn { "PREVIEW" };
     juce::Label status, hint;
     juce::ToggleButton bridgeToggle { "Sing English text on a Japanese voice (transliterate)" };
 };
@@ -377,7 +489,8 @@ private:
 //==============================================================================
 class SingScribeEditor : public juce::AudioProcessorEditor,
                          public juce::DragAndDropContainer,
-                         public juce::FileDragAndDropTarget
+                         public juce::FileDragAndDropTarget,
+                         private juce::Timer
 {
 public:
     explicit SingScribeEditor (SingScribeProcessor& p)
@@ -385,18 +498,29 @@ public:
           tabs (juce::TabbedButtonBar::TabsAtTop),
           voicePanel (p), rollTab (p), lyricist (p)
     {
-        const auto bg = juce::Colour (0xff141221);
-        tabs.addTab ("VOICE",       bg, &voicePanel, false);
-        tabs.addTab ("PIANO ROLL",  bg, &rollTab,    false);
-        tabs.addTab ("AI LYRICIST", bg, &lyricist,   false);
+        applyTheme();
+        tabs.addTab ("VOICE",       juce::Colours::transparentBlack, &voicePanel, false);
+        tabs.addTab ("PIANO ROLL",  juce::Colours::transparentBlack, &rollTab,    false);
+        tabs.addTab ("AI LYRICIST", juce::Colours::transparentBlack, &lyricist,   false);
         tabs.setCurrentTabIndex (1);
         addAndMakeVisible (tabs);
         setSize (980, 600);
         setResizable (true, true);
-        setResizeLimits (720, 420, 2400, 1600);
+        setResizeLimits (760, 440, 2400, 1600);
+        startTimerHz (4);
     }
 
+    ~SingScribeEditor() override { setLookAndFeel (nullptr); }
+
     void resized() override { tabs.setBounds (getLocalBounds()); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& th = proc.theme();
+        g.setGradientFill (juce::ColourGradient (th.bg1, 0, 0, th.bg2,
+                                                 (float) getWidth(), (float) getHeight(), false));
+        g.fillAll();
+    }
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override
     {
@@ -417,7 +541,48 @@ public:
     }
 
 private:
+    void timerCallback() override
+    {
+        if (proc.themeIndex.load() != appliedTheme)
+            applyTheme();
+    }
+
+    void applyTheme()
+    {
+        appliedTheme = proc.themeIndex.load();
+        const auto& th = themeAt (appliedTheme);
+
+        lnf.setColourScheme (th.light ? juce::LookAndFeel_V4::getLightColourScheme()
+                                      : juce::LookAndFeel_V4::getDarkColourScheme());
+        lnf.setColour (juce::ComboBox::backgroundColourId, th.panel);
+        lnf.setColour (juce::ComboBox::textColourId, th.text);
+        lnf.setColour (juce::ComboBox::outlineColourId, th.panelLine);
+        lnf.setColour (juce::ComboBox::arrowColourId, th.accent);
+        lnf.setColour (juce::PopupMenu::backgroundColourId, th.panel);
+        lnf.setColour (juce::PopupMenu::textColourId, th.text);
+        lnf.setColour (juce::PopupMenu::highlightedBackgroundColourId, th.accent.withAlpha (0.35f));
+        lnf.setColour (juce::TextButton::buttonColourId, th.panel);
+        lnf.setColour (juce::TextButton::textColourOffId, th.text);
+        lnf.setColour (juce::TextButton::buttonOnColourId, th.accent);
+        lnf.setColour (juce::TextEditor::backgroundColourId, th.panel);
+        lnf.setColour (juce::TextEditor::textColourId, th.text);
+        lnf.setColour (juce::TextEditor::outlineColourId, th.panelLine);
+        lnf.setColour (juce::TextEditor::focusedOutlineColourId, th.accent);
+        lnf.setColour (juce::Label::textColourId, th.text);
+        lnf.setColour (juce::TabbedButtonBar::tabTextColourId, th.textDim);
+        lnf.setColour (juce::TabbedButtonBar::frontTextColourId, th.accent);
+        lnf.setColour (juce::TabbedComponent::backgroundColourId, juce::Colours::transparentBlack);
+        lnf.setColour (juce::TabbedComponent::outlineColourId, juce::Colours::transparentBlack);
+        lnf.setColour (juce::ScrollBar::thumbColourId, th.accent.withAlpha (0.5f));
+
+        setLookAndFeel (&lnf);
+        sendLookAndFeelChange();
+        repaint();
+    }
+
     SingScribeProcessor& proc;
+    juce::LookAndFeel_V4 lnf;
+    int appliedTheme = -1;
     juce::TabbedComponent tabs;
     VoicePanel voicePanel;
     RollTab rollTab;

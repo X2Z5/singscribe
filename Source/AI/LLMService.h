@@ -9,7 +9,7 @@ namespace ss
 
 struct LyricRequest
 {
-    enum class Mode { TraditionalVocaloid, Underground };
+    enum class Mode { TraditionalVocaloid, Underground, TranslateToRomaji };
 
     juce::String userPrompt;          // what the user typed
     Mode mode = Mode::TraditionalVocaloid;

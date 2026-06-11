@@ -1,5 +1,6 @@
 #pragma once
-// SingScribeProcessor — host glue: FL MIDI capture in, rendered vocal out.
+// SingScribeProcessor — host glue: FL MIDI capture in, rendered vocal out,
+// instant note audition even while the transport is stopped.
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "../Model/VocalNote.h"
 #include "../Model/DiffSingerModelManager.h"
@@ -8,10 +9,56 @@
 #include "../Text/G2PEngine.h"
 #include "../AI/LyricGenerator.h"
 #include "../AI/LlamaCppService.h"
+#include "Theme.h"
 
 namespace ss
 {
 
+//==============================================================================
+/** One-shot playback of audition renders, mixed into processBlock output. */
+class AuditionPlayer
+{
+public:
+    void trigger (std::shared_ptr<juce::AudioBuffer<float>> b, double sourceRate)
+    {
+        srcRate.store (sourceRate);
+        position.store (0.0);
+        std::atomic_store (&buffer, std::shared_ptr<const juce::AudioBuffer<float>> (std::move (b)));
+    }
+
+    void mixInto (float* L, float* R, int numSamples, double hostRate)
+    {
+        auto buf = std::atomic_load (&buffer);
+        if (buf == nullptr) return;
+        const float* src = buf->getReadPointer (0);
+        const int avail  = buf->getNumSamples();
+        const double ratio = srcRate.load() / juce::jmax (8000.0, hostRate);
+        double pos = position.load();
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const auto s0 = (juce::int64) pos;
+            if (s0 + 1 >= avail)
+            {
+                std::shared_ptr<const juce::AudioBuffer<float>> empty;
+                std::atomic_store (&buffer, empty);
+                return;
+            }
+            const float frac = (float) (pos - (double) s0);
+            const float v = (src[s0] * (1.0f - frac) + src[s0 + 1] * frac) * 0.85f;
+            L[i] += v;
+            R[i] += v;
+            pos += ratio;
+        }
+        position.store (pos);
+    }
+
+private:
+    std::shared_ptr<const juce::AudioBuffer<float>> buffer;
+    std::atomic<double> position { 0.0 }, srcRate { 44100.0 };
+};
+
+//==============================================================================
 class SingScribeProcessor : public juce::AudioProcessor
 {
 public:
@@ -24,6 +71,11 @@ public:
     {
         lyricGen.setBackend (std::make_unique<LlamaCppService> (findFirstGguf()));
         modelManager.scanForVoices();
+
+        renderEngine.onAuditionReady = [this] (std::shared_ptr<juce::AudioBuffer<float>> b, double sr)
+        {
+            audition.trigger (std::move (b), sr);
+        };
 
         captureHooks.onTransport = [this] (double ppq, double bpm, bool playing)
         {
@@ -50,6 +102,8 @@ public:
         return files.isEmpty() ? llmDirectory().getChildFile ("model.gguf") : files[0];
     }
 
+    const Theme& theme() const { return themeAt (themeIndex.load()); }
+
     //==========================================================================
     void prepareToPlay (double sampleRate, int) override
     {
@@ -69,24 +123,27 @@ public:
     {
         juce::ScopedNoDenormals nd;
         buffer.clear();
+        const int n = buffer.getNumSamples();
+        if (n == 0) { midi.clear(); return; }
 
         juce::AudioPlayHead::PositionInfo pos;
         if (auto* ph = getPlayHead())
             if (auto p = ph->getPosition())
                 pos = *p;
 
-        capture.processHostBlock (midi, pos, buffer.getNumSamples(), captureHooks);
+        capture.processHostBlock (midi, pos, n, captureHooks);
 
-        if (pos.getIsPlaying() && buffer.getNumSamples() > 0)
+        float* L = buffer.getWritePointer (0);
+        float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : L;
+
+        if (pos.getIsPlaying())
         {
             const double ppq = pos.getPpqPosition().orFallback (0.0);
             const double bpm = pos.getBpm().orFallback (120.0);
-            renderEngine.cache.pull (buffer.getWritePointer (0),
-                                     buffer.getNumSamples(), ppq, bpm, currentSampleRate);
-            if (buffer.getNumChannels() > 1)
-                buffer.copyFrom (1, 0, buffer, 0, 0, buffer.getNumSamples());
+            renderEngine.cache.pull (L, R, n, ppq, bpm, currentSampleRate);
         }
 
+        audition.mixInto (L, R, n, currentSampleRate);   // audible even when stopped
         midi.clear();
     }
 
@@ -109,6 +166,9 @@ public:
         if (auto v = modelManager.getActiveVoice())
             vt.setProperty ("voice", v->name, nullptr);
         vt.setProperty ("genreMode", genreModeId.load(), nullptr);
+        vt.setProperty ("speaker",   renderEngine.speakerIndex.load(), nullptr);
+        vt.setProperty ("unison",    renderEngine.unisonMode.load(), nullptr);
+        vt.setProperty ("theme",     themeIndex.load(), nullptr);
         vt.addChild (sequence.toValueTree(), -1, nullptr);
         if (auto xml = vt.createXml())
             copyXmlToBinary (*xml, dest);
@@ -121,6 +181,9 @@ public:
             const auto vt = juce::ValueTree::fromXml (*xml);
             if (! vt.isValid()) return;
             genreModeId.store ((int) vt.getProperty ("genreMode", 1));
+            renderEngine.speakerIndex.store ((int) vt.getProperty ("speaker", 0));
+            renderEngine.unisonMode.store ((int) vt.getProperty ("unison", 0));
+            themeIndex.store ((int) vt.getProperty ("theme", 0));
             const auto seq = vt.getChildWithName ("sequence");
             if (seq.isValid())
                 sequence.restoreFromValueTree (seq);
@@ -142,10 +205,12 @@ public:
     HostNoteCapture::Hooks   captureHooks;
     VocalRenderEngine        renderEngine;
     LyricGenerator           lyricGen;
+    AuditionPlayer           audition;
 
     std::atomic<double> lastPpq { 0.0 }, lastBpm { 120.0 };
     std::atomic<bool>   isPlaying { false };
-    std::atomic<int>    genreModeId { 1 };          // remembered UI choice
+    std::atomic<int>    genreModeId { 1 };
+    std::atomic<int>    themeIndex { 0 };
 
 private:
     double currentSampleRate = 44100.0;

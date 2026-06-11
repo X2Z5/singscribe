@@ -18,7 +18,7 @@ juce::MidiFile buildMidiFromSequence (VocalSequence& seq, double bpm)
     for (const auto& n : seq.snapshot())
     {
         if (n.isRest) continue;
-        auto lyricMeta = juce::MidiMessage::textMetaEvent (5, n.lyric);   // lyric meta
+        auto lyricMeta = juce::MidiMessage::textMetaEvent (5, n.lyric);
         lyricMeta.setTimeStamp (n.startBeat * ppq);
         track.addEvent (lyricMeta);
 
@@ -60,7 +60,7 @@ int importMidiIntoSequence (const juce::File& f, VocalSequence& seq)
             {
                 if (auto* off = track->getEventPointer (i)->noteOffObject)
                     return off->message.getTimeStamp();
-                return ev.getTimeStamp() + tpq;     // dangling note-on → 1 beat
+                return ev.getTimeStamp() + tpq;
             }();
 
             VocalNote n;
@@ -75,7 +75,7 @@ int importMidiIntoSequence (const juce::File& f, VocalSequence& seq)
     if (! imported.empty())
         seq.mutate ([&imported] (std::vector<VocalNote>& notes)
         {
-            notes = std::move (imported);           // import replaces the sequence
+            notes = std::move (imported);
         });
     return (int) imported.size();
 }
@@ -85,81 +85,80 @@ int importMidiIntoSequence (const juce::File& f, VocalSequence& seq)
 //==============================================================================
 void PianoRollCanvas::paint (juce::Graphics& g)
 {
-    const auto bg     = juce::Colour (0xff141221);
-    const auto pink   = juce::Colour (0xffff5fa2);
-    const auto cyan   = juce::Colour (0xff59e3ff);
+    const auto& th = proc.theme();
+    g.fillAll (th.bg1);
 
-    g.fillAll (bg);
-
-    // pitch lanes
     for (int p = pitchLo; p <= pitchHi; ++p)
     {
         const int y = pitchToY (p);
         const int pc = p % 12;
         const bool black = (pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10);
-        g.setColour (black ? juce::Colours::black.withAlpha (0.25f)
-                           : juce::Colours::white.withAlpha (0.025f));
+        g.setColour (black ? th.bg2.contrasting (0.04f).withAlpha (0.35f)
+                           : th.text.withAlpha (0.025f));
         g.fillRect (0, y, getWidth(), rowH);
         if (pc == 0)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.08f));
+            g.setColour (th.text.withAlpha (0.08f));
             g.fillRect (0, y + rowH - 1, getWidth(), 1);
-            g.setColour (juce::Colours::white.withAlpha (0.35f));
+            g.setColour (th.textDim);
             g.setFont (juce::Font (juce::FontOptions (10.0f)));
             g.drawText ("C" + juce::String (p / 12 - 1), 4, y, 30, rowH, juce::Justification::centredLeft);
         }
     }
 
-    // beat/bar grid
     const int beats = (int) (getWidth() / beatToX) + 1;
     for (int b = 0; b <= beats; ++b)
     {
-        const float x = beatToPx (b);
-        g.setColour (juce::Colours::white.withAlpha (b % 4 == 0 ? 0.14f : 0.05f));
-        g.fillRect (x, 0.0f, 1.0f, (float) getHeight());
+        g.setColour (th.text.withAlpha (b % 4 == 0 ? 0.13f : 0.05f));
+        g.fillRect (beatToPx (b), 0.0f, 1.0f, (float) getHeight());
     }
 
-    // notes
     const auto notes = proc.sequence.snapshot();
     for (const auto& n : notes)
     {
         if (n.isRest) continue;
         juce::Rectangle<float> r (beatToPx (n.startBeat), (float) pitchToY (n.midiPitch),
                                   (float) (n.lengthBeats * beatToX) - 1.0f, (float) rowH - 1.0f);
-        const auto col = n.isMelisma ? pink.withAlpha (0.35f)
-                                     : (n.fromHostCapture ? pink : cyan).withAlpha (0.8f);
-        g.setColour (col);
+        const auto base = n.fromHostCapture ? th.noteHost : th.noteUser;
+        g.setColour (n.isMelisma ? base.withAlpha (0.35f) : base.withAlpha (0.85f));
         g.fillRoundedRectangle (r, 3.0f);
         if (n.id == selectedId)
         {
-            g.setColour (juce::Colours::white);
+            g.setColour (th.text);
             g.drawRoundedRectangle (r, 3.0f, 1.6f);
         }
         if (r.getWidth() > 22.0f)
         {
-            g.setColour (juce::Colours::black.withAlpha (0.85f));
+            g.setColour (base.contrasting (0.9f));
             g.setFont (juce::Font (juce::FontOptions (10.5f)));
             g.drawText (n.lyric, r.toNearestInt().reduced (3, 0), juce::Justification::centredLeft);
         }
     }
 
-    // playhead
     if (proc.isPlaying.load())
     {
-        g.setColour (cyan.withAlpha (0.9f));
+        g.setColour (th.playhead.withAlpha (0.9f));
         g.fillRect (beatToPx (proc.lastPpq.load()), 0.0f, 1.6f, (float) getHeight());
     }
+}
+
+void PianoRollCanvas::auditionSelected()
+{
+    if (selectedId.isNull()) return;
+    for (const auto& n : proc.sequence.snapshot())
+        if (n.id == selectedId) { proc.renderEngine.requestAudition (n); break; }
 }
 
 void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
     if (lyricEdit.isVisible()) commitLyricEdit();
+    dragChanged = false;
 
     const auto notes = proc.sequence.snapshot();
     if (const auto* hit = hitTest (e.getPosition(), notes))
     {
-        if (e.mods.isRightButtonDown())            // FL convention: right-click = delete
+        if (e.mods.isRightButtonDown())
         {
             proc.sequence.removeNote (hit->id);
             if (selectedId == hit->id) selectedId = juce::Uuid::null();
@@ -176,10 +175,9 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (e.mods.isRightButtonDown())                // right-click on empty space: nothing
+    if (e.mods.isRightButtonDown())
         return;
 
-    // empty space → create a note
     VocalNote n;
     n.startBeat   = snap (pxToBeat ((float) e.x));
     n.lengthBeats = 1.0;
@@ -188,6 +186,7 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
     selectedId    = n.id;
     dragOrig      = n;
     dragMode      = DragMode::resize;
+    dragChanged   = true;                      // new note: audition on mouse-up
     grabBeatOffset = 0.0;
     proc.sequence.addNote (n);
     proc.renderEngine.requestRender (proc.lastBpm.load());
@@ -195,7 +194,7 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
 
 void PianoRollCanvas::mouseDrag (const juce::MouseEvent& e)
 {
-    if (e.mods.isRightButtonDown())                // right-drag sweeps notes away (FL style)
+    if (e.mods.isRightButtonDown())
     {
         const auto notes = proc.sequence.snapshot();
         if (const auto* hit = hitTest (e.getPosition(), notes))
@@ -207,9 +206,9 @@ void PianoRollCanvas::mouseDrag (const juce::MouseEvent& e)
     }
     if (dragMode == DragMode::none || selectedId.isNull()) return;
 
-    const double beatAt = pxToBeat ((float) e.x);
+    const double beatAt  = pxToBeat ((float) e.x);
     const int    pitchAt = yToPitch (e.y);
-    const auto   id = selectedId;
+    const auto   id   = selectedId;
     const auto   mode = dragMode;
     const auto   orig = dragOrig;
     const double grab = grabBeatOffset;
@@ -231,7 +230,16 @@ void PianoRollCanvas::mouseDrag (const juce::MouseEvent& e)
             break;
         }
     });
+    dragChanged = true;
     proc.renderEngine.requestRender (proc.lastBpm.load());
+}
+
+void PianoRollCanvas::mouseUp (const juce::MouseEvent&)
+{
+    if (dragChanged && dragMode != DragMode::none)
+        auditionSelected();                    // hear the note you just placed/moved
+    dragMode = DragMode::none;
+    dragChanged = false;
 }
 
 void PianoRollCanvas::mouseDoubleClick (const juce::MouseEvent& e)
@@ -270,6 +278,8 @@ void PianoRollCanvas::commitLyricEdit()
             }
     });
     proc.renderEngine.requestRender (proc.lastBpm.load());
+    selectedId = id;
+    auditionSelected();                        // hear the new syllable immediately
 }
 
 bool PianoRollCanvas::keyPressed (const juce::KeyPress& k)
