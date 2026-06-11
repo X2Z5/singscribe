@@ -1,0 +1,75 @@
+name: Build SingScribe VST3
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  ORT_VERSION: 1.20.1
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Download ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sfL -o ort.zip "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip"
+          unzip -q ort.zip
+          mv "onnxruntime-win-x64-${ORT_VERSION}" ort
+
+      - name: Download ONNX Runtime (macOS universal)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          curl -sfL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz"
+          tar xzf ort.tgz
+          mv "onnxruntime-osx-universal2-${ORT_VERSION}" ort
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DORT_ROOT="$PWD/ort" \
+              "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          else
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DORT_ROOT="$PWD/ort"
+          fi
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Assemble bundle (copy ONNX Runtime inside the .vst3)
+        shell: bash
+        run: |
+          mkdir -p out
+          VST3_DIR=$(find build -type d -name "SingScribe.vst3" -path "*Release*" | head -1)
+          if [ -z "$VST3_DIR" ]; then VST3_DIR=$(find build -type d -name "SingScribe.vst3" | head -1); fi
+          echo "found: $VST3_DIR"
+          cp -r "$VST3_DIR" out/
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            cp ort/lib/libonnxruntime.${ORT_VERSION}.dylib "out/SingScribe.vst3/Contents/MacOS/"
+          else
+            cp ort/lib/onnxruntime.dll "out/SingScribe.vst3/Contents/x86_64-win/"
+          fi
+          ls -R out | head -40
+
+      - name: Upload plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: SingScribe-${{ matrix.name }}
+          path: out
