@@ -161,7 +161,68 @@ public:
         juce::StringArray out;
         for (const auto& w : juce::StringArray::fromTokens (text, " ,.!?;:\n\t", {}))
             if (w.isNotEmpty())
-                out.addArray (splitRomajiMorae (w.toLowerCase()));
+                out.addArray (splitRomajiMorae (kanaToRomaji (w).toLowerCase()));
+        return out;
+    }
+
+    /** Hiragana/katakana → romaji (kanji is skipped — ask the AI for romaji). */
+    static juce::String kanaToRomaji (const juce::String& in)
+    {
+        static const char* tbl[86] = {
+            "a","a","i","i","u","u","e","e","o","o",
+            "ka","ga","ki","gi","ku","gu","ke","ge","ko","go",
+            "sa","za","shi","ji","su","zu","se","ze","so","zo",
+            "ta","da","chi","ji","","tsu","zu","te","de","to","do",
+            "na","ni","nu","ne","no",
+            "ha","ba","pa","hi","bi","pi","fu","bu","pu","he","be","pe","ho","bo","po",
+            "ma","mi","mu","me","mo",
+            "!ya","ya","!yu","yu","!yo","yo",
+            "ra","ri","ru","re","ro",
+            "wa","wa","i","e","o","n","bu","ka","ke" };
+
+        juce::String out, lastMora;
+        auto flush = [&] { out += lastMora; lastMora.clear(); };
+
+        for (int i = 0; i < in.length(); ++i)
+        {
+            juce::juce_wchar c = in[i];
+            if (c >= 0x30A1 && c <= 0x30F6) c = (juce::juce_wchar) (c - 0x60); // katakana → hiragana
+            if (c == 0x30FC)                                                   // ー long vowel
+            {
+                if (lastMora.isNotEmpty())
+                {
+                    const auto v = lastMora.getLastCharacter();
+                    flush();
+                    lastMora = juce::String::charToString (v);
+                }
+                continue;
+            }
+            if (c >= 0x3041 && c <= 0x3096)
+            {
+                const char* r = tbl[(int) c - 0x3041];
+                if (r[0] == '\0') continue;                                    // っ sokuon
+                if (r[0] == '!')                                               // small ya/yu/yo
+                {
+                    if (lastMora.endsWithChar ('i'))
+                    {
+                        lastMora = lastMora.dropLastCharacters (1) + juce::String (r + 1);
+                        lastMora = lastMora.replace ("shy", "sh")
+                                           .replace ("chy", "ch")
+                                           .replace ("jy",  "j");
+                    }
+                    continue;
+                }
+                flush();
+                lastMora = r;
+            }
+            else if (c < 128)
+            {
+                flush();
+                out += juce::String::charToString (c);
+            }
+            // kanji / other scripts: skipped
+        }
+        flush();
         return out;
     }
 

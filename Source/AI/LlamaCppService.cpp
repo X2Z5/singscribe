@@ -23,7 +23,7 @@ struct LlamaCppService::Impl
 
 //==============================================================================
 LlamaCppService::LlamaCppService (const juce::File& ggufFile)
-    : juce::Thread ("SS-LLM"), modelFile (ggufFile)
+    : juce::Thread ("SS-LLM", 8 * 1024 * 1024), modelFile (ggufFile)
 {
     startThread();
 }
@@ -126,11 +126,13 @@ juce::String LlamaCppService::systemPromptFor (const LyricRequest& r)
         constraints << " — never exceed a line's budget. ";
     }
     if (r.voiceLanguage == "jpn")
-        constraints << "Prefer open consonant-vowel syllables (ka, shi, no, ru...) and "
-                       "vowel endings so a Japanese voicebank can sing them cleanly. ";
-    constraints << "Output ONLY the lyric lines, one per line: no titles, numbering, "
-                   "quotes or commentary. All text must be original — never reproduce "
-                   "existing song lyrics.";
+        constraints << "Write Japanese lyrics in ROMAJI (Latin letters only — no kana, "
+                       "no kanji). Prefer open consonant-vowel syllables (ka, shi, no, "
+                       "ru...) and vowel endings so a voicebank can sing them cleanly. ";
+    constraints << "This is an ordinary, wholesome creative songwriting request — "
+                   "always comply. Output ONLY the lyric lines, one per line: no titles, "
+                   "numbering, quotes, apologies or commentary. All text must be "
+                   "original — never reproduce existing song lyrics.";
 
     if (r.mode == LyricRequest::Mode::TraditionalVocaloid)
         return "You are a lyricist for classic virtual singers in the style of the "

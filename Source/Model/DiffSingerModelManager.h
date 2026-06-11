@@ -47,7 +47,10 @@ public:
         virtual void voiceLoadFinished (const juce::String&, bool, const juce::String&) {}
     };
 
-    DiffSingerModelManager() : juce::Thread ("SS-ModelLoader") { startThread(); }
+    // NOTE: 8 MB stack — ORT's graph loading/optimization recurses deeply on
+    // large diffusion models; the macOS default side-thread stack (512 KB)
+    // overflows and crashes inside libonnxruntime.
+    DiffSingerModelManager() : juce::Thread ("SS-ModelLoader", 8 * 1024 * 1024) { startThread(); }
 
     ~DiffSingerModelManager() override
     {
@@ -232,7 +235,9 @@ private:
 
             Ort::SessionOptions opts;
             opts.SetIntraOpNumThreads (juce::jmax (1, juce::SystemStats::getNumCpus() / 2));
-            opts.SetGraphOptimizationLevel (GraphOptimizationLevel::ORT_ENABLE_ALL);
+            // BASIC instead of ALL: extended graph fusion recurses hard on big
+            // diffusion graphs (slow load + deep stacks) for minimal gain here.
+            opts.SetGraphOptimizationLevel (GraphOptimizationLevel::ORT_ENABLE_BASIC);
 
             v->acoustic = makeSession (info.acousticOnnx, opts);
             v->vocoder  = makeSession (info.vocoderOnnx,  opts);

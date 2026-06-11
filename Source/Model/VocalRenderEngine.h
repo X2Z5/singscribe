@@ -67,7 +67,8 @@ class VocalRenderEngine : private juce::Thread
 {
 public:
     VocalRenderEngine (VocalSequence& seq, DiffSingerModelManager& mgr, G2PEngine& g2pRef)
-        : juce::Thread ("SS-DiffSingerRender"), sequence (seq), models (mgr), g2p (g2pRef)
+        : juce::Thread ("SS-DiffSingerRender", 8 * 1024 * 1024),   // big stack: ORT inference
+          sequence (seq), models (mgr), g2p (g2pRef)
     {
         startThread();
     }

@@ -159,6 +159,14 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
     const auto notes = proc.sequence.snapshot();
     if (const auto* hit = hitTest (e.getPosition(), notes))
     {
+        if (e.mods.isRightButtonDown())            // FL convention: right-click = delete
+        {
+            proc.sequence.removeNote (hit->id);
+            if (selectedId == hit->id) selectedId = juce::Uuid::null();
+            dragMode = DragMode::none;
+            proc.renderEngine.requestRender (proc.lastBpm.load());
+            return;
+        }
         selectedId = hit->id;
         dragOrig   = *hit;
         const float rightEdge = beatToPx (hit->endBeat());
@@ -167,6 +175,9 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
         repaint();
         return;
     }
+
+    if (e.mods.isRightButtonDown())                // right-click on empty space: nothing
+        return;
 
     // empty space → create a note
     VocalNote n;
@@ -184,6 +195,16 @@ void PianoRollCanvas::mouseDown (const juce::MouseEvent& e)
 
 void PianoRollCanvas::mouseDrag (const juce::MouseEvent& e)
 {
+    if (e.mods.isRightButtonDown())                // right-drag sweeps notes away (FL style)
+    {
+        const auto notes = proc.sequence.snapshot();
+        if (const auto* hit = hitTest (e.getPosition(), notes))
+        {
+            proc.sequence.removeNote (hit->id);
+            proc.renderEngine.requestRender (proc.lastBpm.load());
+        }
+        return;
+    }
     if (dragMode == DragMode::none || selectedId.isNull()) return;
 
     const double beatAt = pxToBeat ((float) e.x);
